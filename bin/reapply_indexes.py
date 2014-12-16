@@ -114,7 +114,8 @@ def get_children(conn, partman_schema):
 
 def get_drop_list(conn, child_table):
     cur = conn.cursor() 
-    sql = """SELECT i.indisprimary, n.nspname||'.'||c.relname, t.conname
+    sql = """SELECT i.indisprimary, n.nspname||'.'||c.relname, t.conname,
+               pg_get_indexdef(indexrelid) AS statement
             FROM pg_catalog.pg_index i 
             JOIN pg_catalog.pg_class c ON i.indexrelid = c.oid
             JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
@@ -127,13 +128,13 @@ def get_drop_list(conn, child_table):
     for d in drop_tuple:
         if d[0] == True and args.primary:
             statement = "ALTER TABLE " + child_table + " DROP CONSTRAINT " + d[2]
-            drop_list.append(statement)
+            drop_list.append([statement,d[3]])
         elif d[0] == False:
             if args.drop_concurrent:
                 statement = "DROP INDEX CONCURRENTLY " + d[1]
             else:
                 statement = "DROP INDEX " + d[1]
-            drop_list.append(statement)
+            drop_list.append([statement,d[3]])
     return drop_list
 
 
@@ -166,6 +167,37 @@ def get_partman_schema(conn):
     cur.close()
     return partman_schema
 
+def eliminate_common_indexes(parent_list, child_list)
+    drop_children = []
+    create_children = []
+    # eliminate the part of the statement that refers to the table name and index name
+    pat = re.compile('USING .*')
+    # if there is a parent index that matches the child index
+    # don't try to drop it - we'd just have to recreate it
+    for c in child_list:
+        parent_found = False
+        chinddef = pat.search(c[1])
+        for p in parent_list:
+            parinddef = pat.search(p[0])
+            if chinddef == parinddef:
+                parent_found = True
+                break
+        if not parent_found:
+            drop_children.append(c[0])
+    # if there is a child index that matches the parent index
+    # don't try to create it
+    for p in parent_list:
+        child_found = False
+        parinddef = pat.search(p[0])
+        for c in child_list:
+            chinddef = pat.search(c[1])
+            if chinddef == parinddef:
+                child_found = True
+                break
+        if not child_found:
+            create_children.append(p)
+    return (create_children, drop_children)
+
 
 def reindex_proc(child_table, partman_schema):
     conn = create_conn()
@@ -173,6 +205,7 @@ def reindex_proc(child_table, partman_schema):
     cur = conn.cursor()
     drop_list = get_drop_list(conn, child_table)
     parent_index_list = get_parent_indexes(conn)
+    (parent_index_list, drop_list) = eliminate_common_indexes(parent_index_list, drop_list)
     for d in drop_list:
         if not args.quiet:
             print(cur.mogrify(d))
